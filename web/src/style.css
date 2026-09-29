@@ -1,0 +1,911 @@
+/* ==========================================================================
+   IBM Plex Sans（拉丁字形，仅 400/500/600，共 71KB）
+   --------------------------------------------------------------------------
+   自托管，运行时不依赖网络。
+   为什么不用 Inter：Inter 本身就是"AI 生成页面"的默认正文字体，
+   换上去只是从一个 AI 默认值换到另一个。Plex 的字形特征更明显
+   （单层 a、带尾巴的 l、方肩 R），是工程/仪表盘的味道。
+   只含拉丁字形——中文由系统字体接（PingFang / 微软雅黑），
+   中文 Web 字体动辄好几 MB，不值得为这个看板引入。
+   许可：SIL Open Font License 1.1（可自由打包分发）
+   来源：@fontsource/ibm-plex-sans
+   ========================================================================== */
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./assets/fonts/ibm-plex-sans-latin-400.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('./assets/fonts/ibm-plex-sans-latin-500.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('./assets/fonts/ibm-plex-sans-latin-600.woff2') format('woff2');
+}
+
+/* ==========================================================================
+   设计系统：液态玻璃（Liquid Glass）
+   --------------------------------------------------------------------------
+   三件事共同构成"玻璃"：
+     1. 背景光层  —— 玻璃必须背后有东西可折射，纯白底上做不出玻璃感
+        由两层叠出来：布光 .aurora（主光 + 补光 + 暗角）→ 顶部白纱 .aurora-fade
+     2. 半透明 + 背景模糊 + 饱和度提升（backdrop-filter）
+     3. 镜面高光边  —— 用 mask-composite 做 1px 渐变描边，模拟玻璃边缘反光
+   ========================================================================== */
+
+:root {
+  /* 底色 */
+  --bg: #eef1f7;
+  /* 文字三级。数值是**实测出来**的，不是拍脑袋定的：
+     面板底色最亮处约 #f5f8ff（主光打在右上角），
+     原来 --text-3 的 #8b95a6 在上面只有 2.84:1，远低于 WCAG AA 的 4.5:1。
+     压到 #5f6b82 后是 5.05:1，达标。
+     --text-2 同步压深，否则它会和新的 --text-3 挤在一起，层级分不开。 */
+  --text: #14171f; /* 最亮面板上 16.9:1 */
+  --text-2: #4d5665; /* 7.0:1 */
+  --text-3: #5f6b82; /* 5.1:1 */
+
+  /* 玻璃 */
+  /* 白底透明度是"像玻璃"还是"像白卡片"的分水岭：
+     原来的 0.74/0.44 叠在浅色背景上几乎等于不透明，背景透不上来，
+     糊化、色偏全都看不出来。调低后色斑才能透过面板显出来。 */
+  --glass-bg: linear-gradient(148deg, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0.3));
+  --glass-bg-strong: linear-gradient(148deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.7));
+  /* 注意：面板另有一层 ::before 镜面描边。这里的边框再用亮白就是"双层亮边"，
+     所以压到很淡，只负责给面板一个极轻的轮廓。 */
+  --glass-border: rgba(255, 255, 255, 0.3);
+  --glass-blur: blur(22px) saturate(180%);
+  --glass-blur-strong: blur(34px) saturate(190%);
+
+  --shadow-sm: 0 1px 2px rgba(16, 22, 34, 0.04), 0 4px 12px -3px rgba(16, 22, 34, 0.07);
+  --shadow-md: 0 1px 2px rgba(16, 22, 34, 0.04), 0 10px 28px -8px rgba(16, 22, 34, 0.13);
+  --shadow-lg: 0 2px 4px rgba(16, 22, 34, 0.05), 0 24px 56px -16px rgba(16, 22, 34, 0.22);
+  /* 顶部内高光 + 底部内暗边，让玻璃有厚度。
+     顶部白线原来 0.95，和外面两层描边叠起来变成三条亮线，所以减半。 */
+  --inner-light: inset 0 1px 0 rgba(255, 255, 255, 0.5), inset 0 -1px 0 rgba(255, 255, 255, 0.2);
+
+  /* 控件（按钮 / 输入框 / 下拉触发器）：和面板共用同一套玻璃语言。
+     原来是 0.7 白边 + 0.82 白底 + 0.9 内高光，三层亮白叠在一起，
+     在浅背景上就是一排"发光的白药丸"——边缘全在发光，反而看不出材质。 */
+  --ctl-border: rgba(255, 255, 255, 0.45);
+  --ctl-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.3));
+  --ctl-inset: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+
+  /* 强调色：深蔚蓝（偏青）。
+     原来用 indigo-600 #4f46e5——那是 AI 生成页面最常用的强调色，
+     而且和蓝紫背景同色相，整个界面失去色彩层级，一眼就是模板。
+     换成偏青的深蔚蓝：既和背景的蓝紫拉开，又不是那个"AI 紫"。
+     配套给一个亮度台阶（hi/lo）和几个透明度档，
+     这样代码里就不用再散落 rgba(79,70,229,*) 这种硬编码了。 */
+  --accent: #27618c;
+  --accent-hi: #32749f; /* 亮一档：按钮渐变顶部、hover 态 */
+  --accent-lo: #1f5175; /* 暗一档：按钮渐变底部 */
+  --accent-2: #2f8ba3; /* 辅助色：logo 渐变、图表第二色 */
+  --accent-soft: rgba(39, 97, 140, 0.1); /* 标签底、浅色填充 */
+  --accent-edge: rgba(39, 97, 140, 0.18); /* 标签描边 */
+  --accent-line: rgba(39, 97, 140, 0.4); /* hover 边框 */
+  --accent-ring: rgba(39, 97, 140, 0.28); /* 焦点环 */
+  --accent-glow: rgba(39, 97, 140, 0.45); /* 投影 */
+
+  --up: #e5484d;
+  --down: #12885a;
+  --warn: #c2740a;
+  /* 状态"正常"的点。刻意和 --down 的绿分开——这个看板里红绿是涨跌语义，
+     状态点再用同一个绿容易误读。 */
+  --ok: #1a8668;
+  --ok-ring: rgba(26, 134, 104, 0.18);
+
+  /* sticky 表头底：跟玻璃面板同色相、只略提亮的浅蓝。
+     面板实测是 #cbdafb 一带的浅蓝（不是白），近白底压上去会横出一条白带，
+     详见下方 th 的注释。 */
+  --thead-bg: rgba(226, 235, 250, 0.94);
+
+  /* 圆角：按角色分四级。
+     原来从 6px 的小标签到整屏面板都往 18px 上靠，另外还散着
+     8/9/11/14px 一堆 ad-hoc 值。统一的大圆角是"模板感"的来源之一——
+     大面板该圆，小控件该方一点，层级才对得上。 */
+  --radius: 14px; /* 面板、抽屉、弹层 */
+  --radius-sm: 10px; /* 面板内部的块 */
+  --radius-xs: 8px; /* 按钮、输入框等控件 */
+  --radius-chip: 6px; /* 标签、徽标 */
+
+  /* 布局：不撑满整屏 */
+  --shell-max: 1440px;
+  --shell-pad: 28px;
+
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* ---------- 动态背景：布光（主光 + 补光 + 暗角）----------
+   玻璃要"有东西可折射"才成立，所以底上要铺一层有明暗、有方向的光。
+
+   ⚠ 刻意不用"四角散几个彩色径向渐变"那套做法。那套（靛蓝→紫→粉、
+   色斑散落四角、一屏六七个色相）是 AI 生成页面的头号指纹——全都软、
+   全都糊、没有方向感，读起来就是装饰用的色团，不是"一个空间"。
+
+   改成布光就成立了：
+     - 主光 key   右上角一个大而柔的高光（影棚里的主灯）
+     - 补光 fill  左下一小片冷色托住暗部，避免暗部死掉
+     - 暗角 vignette  四周压暗，把视线收回画面中间
+   只有主光和补光在漂移；暗角静止——镜头不会跟着场景动。
+
+   两个刻意的性能取舍：
+   1. 动画只做 translate，不做 scale。纯位移是合成器搬运已栅格化的纹理，
+      几乎不花钱；带 scale 则要每帧重新栅格化整个视口大小的图层。
+   2. 模糊只加在图层上（各一次），不在每帧重复计算。
+
+   注意：外扩值直接决定图层里渐变的实际位置和尺寸，不能随手改。
+   radial-gradient 的百分比是相对"外扩后的元素"算的——外扩缩到 10% 时，
+   所有光斑会跟着缩水、位置内移，整屏就只剩一片灰白（实测踩过）。
+   动画只位移 ±2.6%，外扩 28% 留够了余量。
+   ---------------------------------------- */
+.aurora {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  /* 环境光：铺满全屏的斜向渐变，决定整页的基础明度。
+     这是"整页亮度"的主开关——调浅一点点整页就发白，
+     压到中低明度后白色玻璃面板才有对比可言（面板本身是白的）。
+     ⚠ 但只调这里作用有限：白色面板覆盖了大部分屏幕，底色只在缝隙露出。
+     实测整页平均亮度 234（最初）→ 224（调深一档）→ 213（现在这档）。
+     想再压暗就得动 --glass-bg 的透光率，不能只靠这里。 */
+  background: linear-gradient(160deg, #b9c9e8 0%, #a8b8dc 55%, #93a5cd 100%);
+}
+
+.aurora .layer {
+  position: absolute;
+  inset: -28%;
+  will-change: transform;
+}
+
+/* 主光：右上角的大柔光。全屏唯一的高光来源，也是玻璃高光边的由来 */
+.light-key {
+  background-image: radial-gradient(
+    58% 62% at 74% 16%,
+    rgba(255, 255, 255, 0.55) 0%,
+    rgba(255, 255, 255, 0.12) 42%,
+    transparent 72%
+  );
+  filter: blur(40px);
+  animation: drift-key 64s ease-in-out infinite alternate;
+}
+
+/* 补光：左下角一小片冷色，托住暗部。和主光反方向漂移 */
+.light-fill {
+  background-image: radial-gradient(44% 48% at 14% 84%, rgba(96, 124, 190, 0.42) 0%, transparent 66%);
+  filter: blur(46px);
+  animation: drift-fill 96s ease-in-out infinite alternate;
+}
+
+/* 暗角：四周压暗，把视线收回画面中间。刻意不做动画 */
+.vignette {
+  background-image: radial-gradient(74% 78% at 50% 46%, transparent 42%, rgba(56, 74, 118, 0.34) 100%);
+  filter: blur(24px);
+}
+
+/* 两个光源反方向漂移，周期也不同（64s / 96s）。
+   同向同速的话会叠成一个"整张图在滑"的错觉，反而不像光了。 */
+@keyframes drift-key {
+  0% {
+    transform: translate3d(-2.4%, -1.8%, 0);
+  }
+  100% {
+    transform: translate3d(2.6%, 2.2%, 0);
+  }
+}
+
+@keyframes drift-fill {
+  0% {
+    transform: translate3d(2.2%, 1.6%, 0);
+  }
+  100% {
+    transform: translate3d(-2.4%, -2%, 0);
+  }
+}
+
+/* 细颗粒：让磨砂感更真实，同时压掉大面积渐变的色带 */
+.aurora .grain {
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.42'/%3E%3C/svg%3E");
+  opacity: 0.3;
+  mix-blend-mode: soft-light;
+}
+
+/* 顶部压一层白纱，保证上方文字始终可读。
+   原来给到 0.68，整条顶边是一片发白；底图调深后不需要这么重了。 */
+.aurora-fade {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(120% 80% at 50% -10%, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.1) 55%, transparent 80%);
+}
+
+/* ---------- 通用玻璃面板 ---------- */
+.glass {
+  position: relative;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md), var(--inner-light);
+}
+
+/* 镜面高光边：1px 渐变描边，亮部集中在上方 */
+.glass::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  /* 亮部从 0.98 压到 0.62：1px 的白线原来接近纯白、四边都在发光，
+     面板看着像"带发光描边的白卡片"。压下来后才像玻璃的一道细高光。 */
+  background: linear-gradient(
+    142deg,
+    rgba(255, 255, 255, 0.62) 0%,
+    rgba(255, 255, 255, 0.1) 26%,
+    rgba(255, 255, 255, 0.02) 55%,
+    rgba(255, 255, 255, 0.26) 100%
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  /* 描边压在内容之上才是真实玻璃的边；遮罩只留 1px，不会挡住内容 */
+  z-index: 3;
+}
+
+/* 面板（保持原类名，视图侧无需改动） */
+.panel {
+  position: relative;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md), var(--inner-light);
+}
+
+.panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  /* 亮部从 0.98 压到 0.62：1px 的白线原来接近纯白、四边都在发光，
+     面板看着像"带发光描边的白卡片"。压下来后才像玻璃的一道细高光。 */
+  background: linear-gradient(
+    142deg,
+    rgba(255, 255, 255, 0.62) 0%,
+    rgba(255, 255, 255, 0.1) 26%,
+    rgba(255, 255, 255, 0.02) 55%,
+    rgba(255, 255, 255, 0.26) 100%
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+.panel-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.32);
+}
+
+/* 用一条半透明暗线在亮玻璃上分隔，比纯色边框自然 */
+.panel-head::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(120, 132, 156, 0.18) 18%, rgba(120, 132, 156, 0.18) 82%, transparent);
+}
+
+.panel-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.panel-sub {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 3px;
+}
+
+/* ---------- 按钮 ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 13px;
+  border: 1px solid var(--ctl-border);
+  border-radius: var(--radius-xs);
+  background: var(--ctl-bg);
+  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+  box-shadow: 0 1px 2px rgba(16, 22, 34, 0.05), var(--ctl-inset);
+  color: var(--text);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.18s, box-shadow 0.18s, color 0.18s, transform 0.12s;
+}
+
+.btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.56));
+  box-shadow: 0 2px 8px -2px var(--accent-ring), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  color: var(--accent);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn.primary {
+  background: linear-gradient(180deg, var(--accent), var(--accent-lo));
+  border-color: rgba(255, 255, 255, 0.35);
+  color: #fff;
+  box-shadow: 0 2px 10px -2px var(--accent-glow), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.btn.primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, var(--accent-hi), var(--accent));
+  color: #fff;
+  box-shadow: 0 4px 16px -3px var(--accent-glow), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+/* 低权重按钮：重置、次级操作 */
+.btn.ghost {
+  background: rgba(255, 255, 255, 0.34);
+  border-color: rgba(255, 255, 255, 0.5);
+  color: var(--text-2);
+  box-shadow: none;
+}
+
+.btn.ghost:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--text);
+  box-shadow: 0 2px 8px -2px rgba(16, 22, 34, 0.16);
+}
+
+/* ---------- 表单控件（自绘组件的触发器也复用这套） ---------- */
+.field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--ctl-border);
+  border-radius: var(--radius-xs);
+  background: var(--ctl-bg);
+  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+  box-shadow: 0 1px 2px rgba(16, 22, 34, 0.05), var(--ctl-inset);
+  color: var(--text);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.18s, box-shadow 0.18s;
+}
+
+.field:hover {
+  border-color: var(--accent-line);
+}
+
+.field.is-open,
+.field:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+/* 原生输入框兜底（仍保留 input 的样式，避免遗漏处突兀） */
+input:not([type='checkbox']):not([type='radio']) {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--ctl-border);
+  border-radius: var(--radius-xs);
+  background: var(--ctl-bg);
+  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+  box-shadow: var(--ctl-inset);
+  color: var(--text);
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.18s, box-shadow 0.18s;
+}
+
+input::placeholder {
+  color: var(--text-3);
+}
+
+input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+/* 隐藏原生 search 的清除按钮与日历图标，统一用自绘 */
+input[type='search']::-webkit-search-cancel-button,
+input[type='date']::-webkit-calendar-picker-indicator {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* ---------- 表格 ---------- */
+table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  color: var(--text-3);
+  padding: 9px 12px;
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  /* 这里刻意不用 backdrop-filter：表头是 sticky 的，每列一个模糊层
+     （8 列 × 多张表）滚动时会明显掉帧，改用高不透明底兜住滚上来的行。
+     ⚠ 但"不透明"不等于"近白"：面板是半透明玻璃（实测约 #cbdafb 的浅蓝），
+     原来用 rgba(252,253,255,.88) 这种近白底，在面板上会横出一条明显发白的
+     色带（实测亮度 249 vs 面板 218，差 31），读起来像贴了另一块材质——
+     表格不滚动时尤其突兀。
+     改成跟面板**同色相**、只略提亮的浅蓝（亮度差压到 ~12）：
+     色相差没了，提亮还在，表头仍然分得出来，也不影响 sticky 时盖住滚动的行。 */
+  background: var(--thead-bg);
+  border-bottom: 1px solid rgba(120, 132, 156, 0.16);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+td {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(120, 132, 156, 0.1);
+  font-size: 12px;
+  white-space: nowrap;
+  transition: background 0.12s;
+}
+
+tbody tr:hover td {
+  background: rgba(255, 255, 255, 0.6);
+}
+
+/* ---------- 杂项 ---------- */
+.right {
+  text-align: right;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+.mono {
+  /* Cascadia Code 是 Win10/11 自带（随 Windows Terminal / VS 分发），
+     比原来首选的 Consolas 字形更清晰、也更像"仪器读数" */
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'SFMono-Regular', Consolas,
+    'Liberation Mono', monospace;
+  font-size: 11px;
+}
+
+.muted {
+  color: var(--text-3);
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: var(--radius-chip);
+  font-size: 11px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-edge);
+  color: var(--accent);
+}
+
+.tag.gray {
+  background: rgba(120, 132, 156, 0.1);
+  border-color: rgba(120, 132, 156, 0.16);
+  color: var(--text-2);
+}
+
+.tag.warn {
+  background: rgba(217, 119, 6, 0.12);
+  border-color: rgba(217, 119, 6, 0.2);
+  color: var(--warn);
+}
+
+.bar {
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(120, 132, 156, 0.14);
+  box-shadow: inset 0 1px 1px rgba(16, 22, 34, 0.06);
+  overflow: hidden;
+  min-width: 48px;
+}
+
+.bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-hi));
+  box-shadow: 0 0 8px -1px var(--accent-glow);
+  transition: width 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.scroll {
+  overflow: auto;
+}
+
+/* 整页型面板（会话 / 明细）：铺满剩余高度，表体内部滚动 */
+.view-fill {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.view-fill > .scroll {
+  flex: 1;
+  min-height: 0;
+}
+
+.empty {
+  padding: 56px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+/* ---------- 分段控件 ---------- */
+.seg {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  border: 1px solid var(--ctl-border);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.3);
+  backdrop-filter: blur(12px) saturate(160%);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+  box-shadow: inset 0 1px 2px rgba(16, 22, 34, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.seg-btn {
+  border: none;
+  background: transparent;
+  padding: 0 11px;
+  height: 24px;
+  border-radius: var(--radius-chip);
+  font-size: 11px;
+  color: var(--text-2);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.18s, color 0.18s, box-shadow 0.18s;
+}
+
+.seg-btn:hover {
+  color: var(--accent);
+}
+
+/* 不可用档位（如区间是"今天"时的"天/月"粒度）：压暗 + 禁止点击，
+   用 :disabled:hover 提高特异性盖掉上面的 hover 变色 */
+.seg-btn:disabled {
+  color: var(--text-3);
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.seg-btn:disabled:hover {
+  color: var(--text-3);
+}
+
+.seg-btn.on {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0.78));
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(16, 22, 34, 0.12), inset 0 1px 0 #fff;
+}
+
+/* ---------- 弹出层（自绘下拉 / 日历共用，Teleport 到 body） ---------- */
+.pop {
+  position: fixed;
+  z-index: 900;
+  padding: 6px;
+  border-radius: var(--radius);
+  /* 弹层内容要清晰可读，所以比面板更实、模糊更强 */
+  background: linear-gradient(148deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.78));
+  backdrop-filter: var(--glass-blur-strong);
+  -webkit-backdrop-filter: var(--glass-blur-strong);
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  box-shadow: var(--shadow-lg), inset 0 1px 0 rgba(255, 255, 255, 0.95);
+  animation: pop-in 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: top center;
+}
+
+.pop.from-top {
+  transform-origin: bottom center;
+  animation-name: pop-in-top;
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.97);
+  }
+}
+
+@keyframes pop-in-top {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.97);
+  }
+}
+
+/* 下拉选项 */
+.opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--radius-xs);
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s;
+}
+
+.opt:hover,
+.opt.hl {
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 1px 3px rgba(16, 22, 34, 0.08), inset 0 1px 0 #fff;
+}
+
+.opt.on {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.opt-check {
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 11px;
+  opacity: 0;
+}
+
+.opt.on .opt-check {
+  opacity: 1;
+}
+
+.opt-hint {
+  color: var(--text-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.opt-group {
+  padding: 8px 10px 4px;
+  font-size: 10px;
+  letter-spacing: 0.4px;
+  color: var(--text-3);
+  text-transform: uppercase;
+}
+
+.pop-scroll {
+  max-height: 300px;
+  overflow: auto;
+  margin: -6px;
+  padding: 6px;
+}
+
+/* ---------- 日历 ---------- */
+.cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 4px 10px;
+}
+
+.cal-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.cal-nav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--ctl-border);
+  border-radius: var(--radius-xs);
+  background: rgba(255, 255, 255, 0.45);
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.cal-nav:hover {
+  color: var(--accent);
+  border-color: var(--accent-line);
+  background: #fff;
+}
+
+.cal-week,
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 32px);
+  gap: 2px;
+}
+
+.cal-week span {
+  height: 24px;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.cal-day {
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-xs);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, box-shadow 0.12s;
+}
+
+.cal-day:hover {
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 1px 3px rgba(16, 22, 34, 0.1), inset 0 1px 0 #fff;
+}
+
+.cal-day.dim {
+  color: rgba(95, 107, 130, 0.42);
+}
+
+.cal-day.today {
+  color: var(--accent);
+  font-weight: 700;
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
+.cal-day.on {
+  background: linear-gradient(180deg, var(--accent), var(--accent-lo));
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 2px 8px -2px var(--accent-glow), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.cal-day.on.today {
+  box-shadow: 0 2px 8px -2px var(--accent-glow), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.cal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(120, 132, 156, 0.14);
+}
+
+.cal-foot-btn {
+  border: none;
+  background: transparent;
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-chip);
+  transition: background 0.15s;
+}
+
+.cal-foot-btn:hover {
+  background: var(--accent-soft);
+}
+
+.cal-foot-btn.plain {
+  color: var(--text-3);
+}
+
+/* ---------- 滚动条 ---------- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(120, 132, 156, 0.35);
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 132, 156, 0.55);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 无障碍：尊重系统"减少动态效果" */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

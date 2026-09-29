@@ -1,0 +1,17 @@
+{
+  "name": "token-dashboard-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "WorkBuddy token 用量看板 - 数据解析与聚合服务（零第三方依赖，仅 Node 内置模块）",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node test/incremental.test.js",
+    "reconcile": "node test/reconcile.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

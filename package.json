@@ -1,0 +1,29 @@
+{
+  "name": "workbuddy-token-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "解析 WorkBuddy 本地 JSONL 会话日志，统计 token 用量与结算 credit 的看板",
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.js",
+    "dev:server": "npm -w server run start",
+    "dev:web": "npm -w web run dev",
+    "build": "npm -w web run build",
+    "start": "npm -w server run start",
+    "demo": "node scripts/demo.js",
+    "preview": "npm -w web run preview",
+    "test": "npm -w server run test",
+    "test:reconcile": "npm -w server run reconcile",
+    "test:e2e": "node tools/e2e-verify.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@esbuild/win32-x64": "^0.28.2",
+    "@rollup/rollup-win32-x64-msvc": "^4.63.5"
+  }
+}
