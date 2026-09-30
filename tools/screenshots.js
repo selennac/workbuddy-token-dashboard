@@ -11,8 +11,9 @@
  * 运行：BASE_URL=http://localhost:5199 node tools/screenshots.js
  */
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 
 const CDP_PORT = Number(process.env.CDP_PORT || 9300 + Math.floor(Math.random() * 600));
 const BASE_URL = process.env.BASE_URL || 'http://localhost:5199';
@@ -37,7 +38,38 @@ if (!BROWSER) {
 const VIEW = { width: 1560, height: 1020, dsf: 2 };
 const NARROW = { width: 1150, height: 1500, dsf: 2 };
 
-const PROFILE_DIR = path.join(OUT_DIR, '..', '..', '.cache', 'shots-profile-' + CDP_PORT);
+/**
+ * 浏览器 profile 放系统临时目录，不放 .cache/。
+ * 它不是项目产物；而且 Windows 上 Chromium 退出后句柄还要释放一会儿，删除经常失败 ——
+ * 留在 .cache/ 里失败一次就是 57MB，实测那边攒到过 743MB。
+ */
+const PROFILE_PREFIX = 'wb-shots-profile-';
+const PROFILE_DIR = path.join(os.tmpdir(), PROFILE_PREFIX + CDP_PORT);
+
+/** 清掉一小时前的遗留 profile：并发运行时另一个进程的 profile 一直有写入，不会被误删 */
+function sweepStaleProfiles() {
+  let names = [];
+  try {
+    names = fs.readdirSync(os.tmpdir());
+  } catch {
+    return;
+  }
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  let n = 0;
+  for (const name of names) {
+    if (!name.startsWith(PROFILE_PREFIX)) continue;
+    const dir = path.join(os.tmpdir(), name);
+    try {
+      if (fs.statSync(dir).mtimeMs > cutoff) continue;
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+      n++;
+    } catch {
+      /* 还被锁着就留给下次 */
+    }
+  }
+  if (n) console.log('顺便清掉 ' + n + ' 个遗留的浏览器 profile');
+}
+sweepStaleProfiles();
 const proc = spawn(
   BROWSER,
   [
@@ -52,13 +84,35 @@ const proc = spawn(
   ],
   { stdio: 'ignore' },
 );
-const cleanup = () => {
-  try {
-    proc.kill();
-  } catch { /* 已经退了 */ }
-  try {
-    fs.rmSync(PROFILE_DIR, { recursive: true, force: true });
-  } catch { /* Windows 上可能被锁，删不掉就算了 */ }
+const cleanup = async () => {
+  /* Windows 上 proc.kill() 只杀主进程，Edge 的渲染/GPU 子进程还活着、还占着
+     profile 里的文件 —— 必须连子进程一起杀（taskkill /T），否则后面的 rm 必然失败。
+     这个脚本原来就是漏 profile 的大户：实测 .cache/ 里 751MB 全是 profile 残留。 */
+  if (proc.pid) {
+    if (process.platform === 'win32') {
+      try {
+        spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { stdio: 'ignore' });
+      } catch {
+        /* 进程可能已经退了 */
+      }
+    } else {
+      try {
+        proc.kill('SIGKILL');
+      } catch {
+        /* 已经退了 */
+      }
+    }
+  }
+  for (let i = 0; i < 20; i++) {
+    await sleep(400);
+    try {
+      fs.rmSync(PROFILE_DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+      return;
+    } catch {
+      /* 句柄还没释放完，再试 */
+    }
+  }
+  console.log('提示：本次的浏览器 profile 没能删干净（在系统临时目录），下次运行会扫掉');
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -216,10 +270,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   console.log('完成：' + OUT_DIR);
   ws.close();
-  cleanup();
+  await cleanup();
   process.exit(0);
-})().catch((e) => {
+})().catch(async (e) => {
   console.error('截图失败: ' + e.message);
-  cleanup();
+  await cleanup();
   process.exit(1);
 });

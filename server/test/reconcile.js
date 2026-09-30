@@ -108,6 +108,10 @@ if (bad === 0 && driftOk) {
  *
  * 走查算法在这里重写一遍（刻意不 import src/timing.js），
  * 否则就是拿同一份代码验自己，等于没验。
+ *
+ * ⚠ 这里比的是**单会话**的 phase。总览那份是跨会话的**并集**（并行会话会重叠，
+ * 直接相加会虚高），而单个会话内部各区间天然不重叠，所以两种口径在单会话上等价 ——
+ * 这也是这一段在 mergePhases 改成扫描线之后依然有效的原因。
  * ======================================================================== */
 
 const AWAY_MS = 30 * 60 * 1000;
@@ -118,7 +122,7 @@ function walkEvents(events) {
   const reqDur = new Map();
   const tools = new Map();
   const open = new Map();
-  const phase = { spanMs: 0, modelMs: 0, toolMs: 0, waitMs: 0, awayMs: 0, activeMs: 0 };
+  const phase = { spanMs: 0, modelMs: 0, toolMs: 0, humanMs: 0, awayMs: 0, activeMs: 0 };
   let prev = null;
 
   for (const e of events) {
@@ -137,13 +141,13 @@ function walkEvents(events) {
         phase.modelMs += gap;
         if (e.mid) reqDur.set(e.mid, gap);
       } else if (e.ty === 'fcr') phase.toolMs += gap;
-      else phase.waitMs += gap;
+      else phase.humanMs += gap;
     }
     prev = e;
   }
 
   if (events.length) phase.spanMs = events[events.length - 1].t - events[0].t;
-  phase.activeMs = phase.modelMs + phase.toolMs + phase.waitMs;
+  phase.activeMs = phase.modelMs + phase.toolMs + phase.humanMs;
   return { reqDur, tools, phase };
 }
 

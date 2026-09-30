@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { api } from '../api.js';
 import { useChart, theme, baseTooltip, baseAxisLabel } from '../composables/useChart.js';
 import { fmtCompact, fmtNum, fmtCredit, fmtPct, fmtTime, fmtSec, fmtSpeed } from '../utils/format.js';
@@ -27,6 +27,21 @@ watch(
   { immediate: true },
 );
 
+/**
+ * 供 App 的自动刷新调用：只换数据，**不**把 data 置空——
+ * 否则每 5 秒抽屉会闪一下空态。出错也保持上一拍的内容，
+ * 一次网络抖动不该把整个抽屉清掉。
+ */
+async function silentReload() {
+  if (!props.sessionId) return;
+  try {
+    data.value = await api.session({ sessionId: props.sessionId });
+  } catch {
+    /* 保持上一拍的数据 */
+  }
+}
+defineExpose({ reload: silentReload });
+
 const s = computed(() => data.value?.summary || {});
 
 /** 吐字速度：拟合斜率（模型固有速度）与实测口径分开给，见 Overview 的注释 */
@@ -41,18 +56,34 @@ const speedSub = computed(() => {
 
 const maxToolMs = computed(() => Math.max(1, ...(data.value?.slowTools || []).map((t) => t.ms)));
 
-/** 上下文增长曲线：输入 token 随轮次爬升，缓存命中垫底 */
+/** 上下文增长曲线。
+ *
+ * 原来输入（动辄上万 token）和输出（几百 token）共用一根 Y 轴，量级差约 100 倍，
+ * 结果输出被压成贴着底边的一条直线 —— 等于没画。实测最长会话 331 次请求，
+ * 输入能爬到 8 万+，而输出长期在 200~1500 之间。
+ *
+ * 改成双 Y 轴：左轴输入（堆叠面积，就是"上下文"本身），右轴输出（柱）。
+ * 双轴唯一站得住的场景就是**同单位、不同量级** —— 这里两边都是 token，
+ * 看的人只要记住"右轴是输出"就行；换成 token vs 百分比那种异单位双轴就开始骗人了。
+ *
+ * 另外补 dataZoom：300 多次请求挤在 260px 里，一根柱子不到 1px，
+ * 不给放大能力就只能看个轮廓。
+ */
 const growthEl = ref(null);
 useChart(growthEl, () => {
-  const g = data.value?.contextGrowth || [];
+  const steps = data.value?.steps || [];
+  if (!steps.length) return null; // 空会话不画，交给容器的空态
+
+  const axisName = { color: theme.faint, fontSize: 10 };
   return {
-    grid: { left: 8, right: 12, top: 30, bottom: 4, containLabel: true },
+    grid: { left: 8, right: 18, top: 46, bottom: 30, containLabel: true },
     tooltip: {
       ...baseTooltip,
       trigger: 'axis',
       formatter: (ps) => {
-        const step = data.value.steps[ps[0].dataIndex];
-        return `<b>第 ${step.index || ps[0].dataIndex + 1} 次请求</b> · ${fmtTime(step.ts)}<br/>
+        const step = steps[ps[0].dataIndex];
+        if (!step) return '';
+        return `<b>第 ${ps[0].dataIndex + 1} 次请求</b> · ${fmtTime(step.ts)}<br/>
           ${step.toolName ? '工具：<b>' + step.toolName + '</b><br/>' : ''}
           输入 <b>${fmtNum(step.prompt)}</b>（命中 ${fmtNum(step.cacheRead)}）<br/>
           输出 <b>${fmtNum(step.completion)}</b>（思考 ${fmtNum(step.reasoning)}）<br/>
@@ -60,56 +91,144 @@ useChart(growthEl, () => {
           结算 <b>${fmtCredit(step.credit)}</b>`;
       },
     },
-    legend: { top: 0, right: 0, itemWidth: 9, itemHeight: 9, textStyle: { color: theme.sub, fontSize: 11 } },
+    /* 图例居中放顶部，两个轴的名称分列左右两端：
+       原来图例靠右，正好和右轴名「输出」压在同一个角落。 */
+    legend: { top: 0, left: 'center', itemWidth: 9, itemHeight: 9, textStyle: { color: theme.sub, fontSize: 11 } },
     xAxis: {
       type: 'category',
-      data: g.map((d) => '#' + d.index),
+      data: steps.map((_, i) => '#' + (i + 1)),
       axisLine: { lineStyle: { color: theme.axis } },
       axisTick: { show: false },
       axisLabel: baseAxisLabel,
     },
-    yAxis: {
-      type: 'value',
-      axisLabel: { ...baseAxisLabel, formatter: (v) => fmtCompact(v) },
-      splitLine: { lineStyle: { color: theme.grid } },
-    },
+    yAxis: [
+      {
+        type: 'value',
+        name: '输入',
+        nameTextStyle: axisName,
+        axisLabel: { ...baseAxisLabel, formatter: (v) => fmtCompact(v) },
+        splitLine: { lineStyle: { color: theme.grid } },
+      },
+      {
+        type: 'value',
+        name: '输出',
+        nameTextStyle: axisName,
+        axisLabel: { ...baseAxisLabel, formatter: (v) => fmtCompact(v) },
+        splitLine: { show: false }, // 双轴的网格线重叠会糊成一片，只留左轴的
+      },
+    ],
+    dataZoom: [
+      { type: 'inside', xAxisIndex: 0 },
+      {
+        type: 'slider',
+        xAxisIndex: 0,
+        height: 12,
+        bottom: 2,
+        borderColor: 'transparent',
+        backgroundColor: 'rgba(120,132,156,.08)',
+        fillerColor: 'rgba(31,81,117,.12)',
+        handleStyle: { color: '#1f5175' },
+        textStyle: { color: theme.faint, fontSize: 10 },
+      },
+    ],
     series: [
       {
         name: '缓存命中输入',
         type: 'line',
         stack: 'ctx',
+        yAxisIndex: 0,
         smooth: true,
         symbol: 'none',
-        /* 和主趋势图保持同一套语义配色：命中=浅，未命中=深，输出=赭黄。
-           两张图画的是同一组指标，配色必须能对上，否则看的人要重新学一遍。 */
+        /* 和总览的主趋势图保持同一套语义配色：命中=浅，未命中=深，输出=赭黄。
+           两处画的是同一组指标，配色必须能对上，否则看的人要重新学一遍。 */
         areaStyle: { color: 'rgba(77,155,163,.18)' },
         lineStyle: { color: '#4d9ba3', width: 1.5 },
-        data: (data.value?.steps || []).map((r) => r.cacheRead),
+        data: steps.map((r) => r.cacheRead),
       },
       {
         name: '未命中输入',
         type: 'line',
         stack: 'ctx',
+        yAxisIndex: 0,
         smooth: true,
         symbol: 'none',
         areaStyle: { color: 'rgba(39,97,140,.22)' },
         lineStyle: { color: '#1f5175', width: 1.5 },
-        data: (data.value?.steps || []).map((r) => r.cacheMiss),
+        data: steps.map((r) => r.cacheMiss),
       },
       {
         name: '输出',
-        type: 'line',
-        smooth: true,
-        symbolSize: 4,
-        itemStyle: { color: '#b8863a' },
-        lineStyle: { width: 1.5 },
-        data: (data.value?.steps || []).map((r) => r.completion),
+        type: 'bar',
+        yAxisIndex: 1,
+        barMaxWidth: 6,
+        itemStyle: { color: 'rgba(184,134,58,.85)', borderRadius: [2, 2, 0, 0] },
+        data: steps.map((r) => r.completion),
       },
     ],
   };
 });
 
-const maxStepTotal = computed(() => Math.max(1, ...(data.value?.steps || []).map((r) => r.total)));
+/* ---------- 逐次请求明细：窗口化渲染 ----------
+ *
+ * 一个会话最多能有 300+ 条请求（实测最长 331 条）。13 列全量铺开就是 4000+ 个
+ * 单元格，而看板每 5 秒重取一次数据 → 整张表跟着重渲染，滚动明显掉帧。
+ * 这里只渲染视口内的行，上下各用一行占位撑出滚动高度，DOM 节点数与会话长度脱钩。
+ *
+ * 为什么不引三方虚拟列表：需求只有"定高行 + 单列滚动"这一种，手写不到 30 行；
+ * 引个库反而要额外处理它和 sticky 表头、和 5 秒轮询的配合。
+ *
+ * ⚠ 前提是行高必须严格等于 ROW_H（见 .steps-table td 的固定高度）。
+ * 行高一旦被内容撑开，占位高度就对不上，滚动条会跳。
+ */
+const ROW_H = 34;
+/** 视口外多渲染几行，抵消快速滚动时的白屏 */
+const OVERSCAN = 6;
+
+const steps = computed(() => data.value?.steps || []);
+const maxStepTotal = computed(() => Math.max(1, ...steps.value.map((r) => r.total)));
+
+const listEl = ref(null);
+const viewH = ref(380);
+const scrollTop = ref(0);
+
+const winStart = computed(() => {
+  const n = steps.value.length;
+  return Math.max(0, Math.min(n, Math.floor(scrollTop.value / ROW_H) - OVERSCAN));
+});
+const winEnd = computed(() =>
+  Math.min(steps.value.length, Math.ceil((scrollTop.value + viewH.value) / ROW_H) + OVERSCAN),
+);
+const visibleSteps = computed(() => steps.value.slice(winStart.value, winEnd.value));
+const padTop = computed(() => winStart.value * ROW_H);
+const padBottom = computed(() => Math.max(0, (steps.value.length - winEnd.value) * ROW_H));
+
+/** 视口高度要实测：容器是 max-height，会话短的时候它比 380 矮 */
+let ro = null;
+watch(listEl, (el) => {
+  if (ro) {
+    ro.disconnect();
+    ro = null;
+  }
+  if (!el) return;
+  viewH.value = el.clientHeight || 380;
+  ro = new ResizeObserver(() => {
+    viewH.value = el.clientHeight || 380;
+  });
+  ro.observe(el);
+});
+onBeforeUnmount(() => ro && ro.disconnect());
+
+/** 换会话时把滚动位置拉回顶部：停在上一会话的滚动位置上没有意义 */
+watch(
+  () => props.sessionId,
+  () => {
+    scrollTop.value = 0;
+  },
+);
+
+function onScroll(e) {
+  scrollTop.value = e.target.scrollTop;
+}
 </script>
 
 <template>
@@ -155,11 +274,11 @@ const maxStepTotal = computed(() => Math.max(1, ...(data.value?.steps || []).map
             <div class="panel-head">
               <div>
                 <div class="panel-title">时间去向</div>
-                <div class="panel-sub">在岗时间拆成模型生成 / 工具执行 / 等待用户</div>
+                <div class="panel-sub">在岗时间拆成模型生成 / 工具执行 / 人的环节（你在读和写）</div>
               </div>
             </div>
             <div class="pad">
-              <PhaseBar :phase="data.phase" />
+              <PhaseBar :phase="data.phase" :credit="s.credit" />
             </div>
           </div>
 
@@ -188,18 +307,18 @@ const maxStepTotal = computed(() => Math.max(1, ...(data.value?.steps || []).map
               <div class="panel-sub">横轴为第几次请求；面积越高说明单次请求携带的上下文越大</div>
             </div>
           </div>
-          <div ref="growthEl" style="height: 240px; width: 100%" />
+          <div ref="growthEl" style="height: 260px; width: 100%" />
         </div>
 
         <div class="panel">
           <div class="panel-head">
             <div>
               <div class="panel-title">逐次请求明细</div>
-              <div class="panel-sub">{{ data.steps.length }} 条</div>
+              <div class="panel-sub">{{ steps.length }} 条</div>
             </div>
           </div>
-          <div class="scroll" style="max-height: 380px">
-            <table>
+          <div ref="listEl" class="scroll" style="max-height: 380px" @scroll.passive="onScroll">
+            <table class="steps-table">
               <thead>
                 <tr>
                   <th style="width: 40px">#</th>
@@ -218,8 +337,13 @@ const maxStepTotal = computed(() => Math.max(1, ...(data.value?.steps || []).map
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="(r, i) in data.steps" :key="r.id">
-                  <td class="num muted">{{ i + 1 }}</td>
+                <!-- 上占位：把顶部滚出去的行"撑"出来，行高按 ROW_H 精确折算 -->
+                <tr v-if="padTop > 0" class="vpad" :style="{ height: padTop + 'px' }">
+                  <td colspan="13" />
+                </tr>
+
+                <tr v-for="(r, i) in visibleSteps" :key="r.id">
+                  <td class="num muted">{{ winStart + i + 1 }}</td>
                   <td class="num muted">{{ fmtTime(r.ts, false) }}</td>
                   <td><span class="tag gray">{{ r.kind }}</span></td>
                   <td>
@@ -249,6 +373,10 @@ const maxStepTotal = computed(() => Math.max(1, ...(data.value?.steps || []).map
                   <td>
                     <div class="bar"><i :style="{ width: (r.total / maxStepTotal) * 100 + '%' }" /></div>
                   </td>
+                </tr>
+
+                <tr v-if="padBottom > 0" class="vpad" :style="{ height: padBottom + 'px' }">
+                  <td colspan="13" />
                 </tr>
               </tbody>
             </table>
@@ -416,6 +544,23 @@ const maxStepTotal = computed(() => Math.max(1, ...(data.value?.steps || []).map
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   background: rgba(255, 255, 255, 0.62);
+}
+
+/* 固定行高是窗口化渲染的前提：上下占位行的高度按 ROW_H 折算出来，
+   行高一旦被内容撑开就不再等于 ROW_H，滚动条会跳。
+   34px 足够放下 12px 文字和 tag（约 19px），不会再被内容顶高。 */
+.steps-table td {
+  height: 34px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+/* 占位行只负责撑高度：不能有边框、背景和 padding，否则既多算高度又露馅 */
+.steps-table tr.vpad td,
+.steps-table tr.vpad:hover td {
+  padding: 0;
+  border: none;
+  background: none;
 }
 
 @media (max-width: 900px) {

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PORT, PROJECTS_DIR, HOME } from './config.js';
+import { PORT, PROJECTS_DIR, HOME, SCAN_INTERVAL_MS } from './config.js';
 import { Scanner } from './scanner.js';
 import {
   Store,
@@ -99,14 +99,25 @@ function pickToolCalls(sessionIds, f) {
   );
 }
 
-/** 时间去向：把筛选范围内的会话的阶段时长累加 */
-function pickPhase(sessionIds) {
-  const list = [];
+/**
+ * 时间去向：把筛选范围内的会话合成**墙钟口径**。
+ *
+ * 两处刻意的处理：
+ *  - 区间明细（store.phaseIntervals）交给 mergePhases 做并集，不再直接相加 ——
+ *    并行会话会让同一段时间被算两次（实测虚高 7%）。
+ *  - 裁到筛选区间：筛"今天"时，跨零点的会话只算落在今天的那一段。
+ */
+function pickPhase(sessionIds, f = {}) {
+  const items = [];
   for (const sid of sessionIds) {
-    const p = store.phases.get(sid);
-    if (p) list.push(p);
+    const iv = store.phaseIntervals.get(sid);
+    if (iv) items.push(iv);
   }
-  return mergePhases(list);
+  return mergePhases(items, {
+    from: f.from ? Number(f.from) : -Infinity,
+    to: f.to ? Number(f.to) : Infinity,
+    granularity: f.granularity || 'day',
+  });
 }
 
 /**
@@ -126,7 +137,7 @@ function pickPhaseBySession(sessionIds, limit = 8) {
       spanMs: p.spanMs,
       modelMs: p.modelMs,
       toolMs: p.toolMs,
-      waitMs: p.waitMs,
+      humanMs: p.humanMs,
       awayMs: p.awayMs,
       activeMs: p.activeMs,
     });
@@ -263,6 +274,8 @@ const routes = {
 
     const calls = pickToolCalls(sessionIds, f);
     const summary = summarize(picked);
+    const mergedPhase = pickPhase(sessionIds, f);
+    const { buckets: phaseTimeline, ...phase } = mergedPhase;
 
     return {
       summary,
@@ -287,7 +300,9 @@ const routes = {
           ms: c.ms,
           title: store.sessions.get(c.sessionId)?.title || '',
         })),
-      phase: pickPhase(sessionIds),
+      phase,
+      /** 时间去向按粒度的趋势：只有一个总数看不出变好还是变坏 */
+      phaseTimeline,
       phaseBySession: pickPhaseBySession(sessionIds),
       cacheHitRatePct: pct(picked.length ? summarize(picked).cacheHitRate : 0),
     };
@@ -497,13 +512,14 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-// 启动时全量扫一次，之后每 15s 增量扫（JSONL 是追加写，代价很低）
+// 启动时全量扫一次，之后按 SCAN_INTERVAL_MS 增量扫（JSONL 是追加写，代价很低）
 await store.refresh();
-setInterval(() => store.refresh().catch((e) => console.error('[scan]', e)), 15_000);
+setInterval(() => store.refresh().catch((e) => console.error('[scan]', e)), SCAN_INTERVAL_MS);
 
 server.listen(PORT, () => {
   console.log(`[token-dashboard] API 已启动  http://localhost:${PORT}`);
   console.log(`[token-dashboard] 数据源      ${PROJECTS_DIR}`);
+  console.log(`[token-dashboard] 自动重扫    每 ${SCAN_INTERVAL_MS / 1000}s（增量）`);
   console.log(`[token-dashboard] 已解析 ${store.size()} 条请求 / ${store.sessions.size} 个会话`);
   const fitted = [...store.speedProfiles.values()].filter((p) => p.reliable);
   console.log(

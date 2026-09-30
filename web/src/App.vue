@@ -1,8 +1,9 @@
 <script setup>
-import { onMounted, ref, watch } from 'vue';
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { api } from './api.js';
 import { fmtNum, fmtTime } from './utils/format.js';
 import { pickGranularity, spanDaysOf } from './utils/granularity.js';
+import { loadFilter, saveFilter, sanitizeFilter } from './composables/useFilterStorage.js';
 import FilterBar from './components/FilterBar.vue';
 import SessionDrawer from './components/SessionDrawer.vue';
 import Overview from './views/Overview.vue';
@@ -20,24 +21,39 @@ const meta = ref({});
 const loading = ref(false);
 const openSessionId = ref('');
 
-const filter = ref({
-  preset: '全部',
-  from: '',
-  to: '',
-  projectId: 'all',
-  model: 'all',
-  kind: 'all',
-  granularity: 'day',
-  keyword: '',
-});
+/* 上次的筛选条件：从 localStorage 恢复（只在当天有效，见 useFilterStorage 的注释） */
+const boot = loadFilter();
+const filter = ref(boot.filter);
+/** 是否确实沿用了一份存下来的筛选 —— 顶栏要给个可见的交代 */
+const restoredHint = ref(boot.restored);
+
+/** 用户动了筛选：从这一刻起就不再是"沿用"，把提示收掉 */
+function onFilter(next) {
+  filter.value = next;
+  restoredHint.value = false;
+}
 
 const overviewRef = ref(null);
 const sessionsRef = ref(null);
 const requestsRef = ref(null);
+const drawerRef = ref(null);
+
+/**
+ * 前端自动取数间隔，与服务端扫描间隔（SCAN_INTERVAL_MS，默认 5s）对齐，
+ * 保证每一拍拉到的都是刚扫进内存的新数据。
+ */
+const AUTO_REFRESH_MS = 5000;
+let timer = null;
+let saveTimer = null;
 
 async function loadMeta() {
   try {
     meta.value = await api.meta();
+    /* meta 到手后才能校验存下来的项目/模型/类型是否还在数据里。
+       直接还原一个已经消失的选项，界面上是空选择器 + 恒 0 条结果，
+       比不还原更让人困惑。 */
+    const fixed = sanitizeFilter(filter.value, meta.value);
+    if (JSON.stringify(fixed) !== JSON.stringify(filter.value)) filter.value = fixed;
   } catch (e) {
     meta.value = { error: e.message };
   }
@@ -55,7 +71,55 @@ async function refresh() {
   }
 }
 
-onMounted(loadMeta);
+/**
+ * 静默重取：不动 loading 骨架（会闪），只拉 meta + 当前页签 + 已打开的会话抽屉。
+ *
+ * 刻意**不**调 /api/refresh —— 那是"立刻强制重扫"，属于手动按钮的语义；
+ * 自动这一路只负责把服务端已经扫好的结果拉下来，两边职责分开。
+ */
+async function poll() {
+  if (document.hidden) return; // 切到后台就停，回来时补一拍
+  if (loading.value) return; // 上一拍还没回来（比如刚点过刷新），跳过
+  const map = { overview: overviewRef, sessions: sessionsRef, requests: requestsRef };
+  try {
+    meta.value = await api.meta();
+    await map[tab.value].value?.reload();
+    if (openSessionId.value) await drawerRef.value?.reload();
+  } catch {
+    /* 网络抖动跳过这一拍，下一拍再试，不要把页面顶成错误态 */
+  }
+}
+
+/** 从后台切回前台立刻补一拍，省得干等满一个周期 */
+function onVisibilityChange() {
+  if (!document.hidden) poll();
+}
+
+onMounted(() => {
+  loadMeta();
+  timer = setInterval(poll, AUTO_REFRESH_MS);
+  document.addEventListener('visibilitychange', onVisibilityChange);
+});
+
+onBeforeUnmount(() => {
+  clearInterval(timer);
+  clearTimeout(saveTimer);
+  document.removeEventListener('visibilitychange', onVisibilityChange);
+});
+
+/**
+ * 筛选条件存盘。
+ * 关键词是逐字符改的，debounce 一下，别每个按键都写一次 localStorage。
+ * 粒度被自动兜正（下面那个 watch）也会走这里，正好把兜正后的结果一并存下来。
+ */
+watch(
+  filter,
+  (f) => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => saveFilter(f), 300);
+  },
+  { deep: true },
+);
 
 /**
  * 粒度跟区间绑定：区间一变，原来选中的粒度可能就不适用了
@@ -120,6 +184,7 @@ watch(
           <span class="stat-v num">{{ meta.lastScanAt ? fmtTime(meta.lastScanAt, false) : '-' }}</span>
         </div>
         <span class="dot" title="解析服务正常" />
+        <span class="auto-hint" title="页面每 5 秒自动拉取最新数据（切到后台会暂停）">自动刷新 5s</span>
       </div>
     </header>
 
@@ -129,7 +194,9 @@ watch(
         :filter="filter"
         :meta="meta"
         :loading="loading"
-        @update:filter="filter = $event"
+        :restored="restoredHint"
+        @update:filter="onFilter"
+        @dismiss-restored="restoredHint = false"
         @refresh="refresh"
       />
     </section>
@@ -158,7 +225,12 @@ watch(
     </main>
   </div>
 
-  <SessionDrawer v-if="openSessionId" :session-id="openSessionId" @close="openSessionId = ''" />
+  <SessionDrawer
+    v-if="openSessionId"
+    ref="drawerRef"
+    :session-id="openSessionId"
+    @close="openSessionId = ''"
+  />
 </template>
 
 <style scoped>
@@ -277,6 +349,14 @@ watch(
   border-radius: 50%;
   background: var(--ok);
   box-shadow: 0 0 0 3px var(--ok-ring);
+}
+
+/* 自动刷新的可见回执：数字会自己跳，但得让人知道是"活着"还是"冻住了" */
+.auto-hint {
+  font-size: 10px;
+  color: var(--text-3);
+  letter-spacing: 0.2px;
+  white-space: nowrap;
 }
 
 .toolbar {

@@ -1,6 +1,6 @@
 <script setup>
 /**
- * 用时构成微缩条：模型生成 / 工具执行 / 等待用户。
+ * 用时构成微缩条：模型生成 / 工具执行 / 人的环节。
  *
  * 三处都在用（会话列表的分组小计行、会话行、总览的时间去向下钻），
  * 所以抽出来——不然同一套三段配色和 tooltip 文案要抄三遍，
@@ -13,7 +13,7 @@ import { computed } from 'vue';
 import { fmtSec } from '../utils/format.js';
 
 const props = defineProps({
-  /** 阶段对象，至少要带 modelMs / toolMs / waitMs / activeMs */
+  /** 阶段对象，至少要带 modelMs / toolMs / humanMs / activeMs */
   phase: Object,
   /** 条宽归一化基准 */
   maxMs: { type: Number, default: 0 },
@@ -22,7 +22,7 @@ const props = defineProps({
 });
 
 /** 与总览「时间去向」、图表语义保持一致的三段配色 */
-const COLORS = { model: '#27618c', tool: '#2c7a83', wait: '#b8863a' };
+const COLORS = { model: '#27618c', tool: '#2c7a83', human: '#b8863a' };
 
 const active = computed(() => (props.phase ? props.phase.activeMs || 0 : 0));
 
@@ -32,7 +32,7 @@ const segs = computed(() => {
   return [
     { k: 'model', label: '模型生成', ms: p.modelMs || 0 },
     { k: 'tool', label: '工具执行', ms: p.toolMs || 0 },
-    { k: 'wait', label: '等待用户', ms: p.waitMs || 0 },
+    { k: 'human', label: '人的环节', ms: p.humanMs || 0 },
   ]
     .filter((s) => s.ms > 0)
     .map((s) => ({ ...s, share: s.ms / active.value }));
@@ -51,7 +51,7 @@ const title = computed(() => {
     `在岗 ${fmtSec(active.value)}`,
     `模型生成 ${fmtSec(p.modelMs || 0)}`,
     `工具执行 ${fmtSec(p.toolMs || 0)}`,
-    `等待用户 ${fmtSec(p.waitMs || 0)}`,
+    `人的环节 ${fmtSec(p.humanMs || 0)}`,
   ];
   if (p.awayMs) parts.push(`离开 ${fmtSec(p.awayMs)}（未计入在岗）`);
   return parts.join(' ｜ ');

@@ -108,16 +108,16 @@ function toggleAll() {
   collapsed.value = allCollapsed.value ? new Set() : new Set(groups.value.map((g) => g.projectId));
 }
 
-/* ---------- 用时构成（模型生成 / 工具执行 / 等待用户） ---------- */
+/* ---------- 用时构成（模型生成 / 工具执行 / 人的环节） ---------- */
 
 /** 组头的小计：把组内各会话的阶段时长加起来，再交给微缩条渲染 */
 function groupPhase(g) {
-  const acc = { modelMs: 0, toolMs: 0, waitMs: 0, activeMs: 0 };
+  const acc = { modelMs: 0, toolMs: 0, humanMs: 0, activeMs: 0 };
   for (const s of g.sessions) {
     if (!s.phase) continue;
     acc.modelMs += s.phase.modelMs;
     acc.toolMs += s.phase.toolMs;
-    acc.waitMs += s.phase.waitMs;
+    acc.humanMs += s.phase.humanMs;
     acc.activeMs += s.phase.activeMs;
   }
   return acc;

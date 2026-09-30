@@ -29,6 +29,13 @@ export const PROJECTS_DIR = path.join(HOME, 'projects');
 
 export const PORT = Number(process.env.PORT || 5178);
 
+/**
+ * 后台自动增量扫描间隔。
+ * JSONL 是追加写的，扫描只读新增尾巴、未变化的文件直接跳过，所以 5s 一次成本很低。
+ * 想调松/调紧用 SCAN_INTERVAL_MS 环境变量，不用改代码。
+ */
+export const SCAN_INTERVAL_MS = Number(process.env.SCAN_INTERVAL_MS || 5_000);
+
 /** 前端开发服务器地址，用于 CORS */
 export const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 

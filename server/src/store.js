@@ -8,6 +8,8 @@ import {
   buildSpeedProfiles,
   attachSpeeds,
   summarizeSpeed,
+  bucketKey,
+  bucketStart,
 } from './timing.js';
 
 export class Store {
@@ -21,6 +23,13 @@ export class Store {
     this.toolCalls = [];
     /** @type {Map<string, object>} sessionId -> 时间去向 */
     this.phases = new Map();
+    /**
+     * sessionId -> { from, to, segs } 时间去向的区间明细。
+     * 单独存不挂在 phases 上：总览要把多个会话的区间做并集（并行会重叠），
+     * 而这些明细是内部用的，不该跟着 API 一起吐出去。
+     * @type {Map<string, {from:number,to:number,segs:Array<{s:number,e:number,type:string}>}>}
+     */
+    this.phaseIntervals = new Map();
     /** @type {Map<string, object>} model -> 速度画像 */
     this.speedProfiles = new Map();
     this.defaultOverheadMs = 0;
@@ -56,7 +65,7 @@ export class Store {
 
     // ---------- 耗时维度 ----------
     // 顺序有依赖：先把时间线的差值贴回记录，才能拿 (输出 token, 耗时) 去拟合速度
-    const { reqDur, toolCalls, phases } = deriveTimings(timelines);
+    const { reqDur, toolCalls, phases, intervals } = deriveTimings(timelines);
     for (const r of this.byId.values()) {
       const d = reqDur.get(r.id);
       r.durMs = d ? d.durMs : null;
@@ -69,6 +78,7 @@ export class Store {
 
     this.toolCalls = toolCalls;
     this.phases = phases;
+    this.phaseIntervals = intervals;
     this.speedProfiles = profiles;
     this.defaultOverheadMs = defaultOverheadMs;
   }
@@ -240,27 +250,8 @@ export function timeline(records, granularity = 'day') {
     .sort((a, b) => a.ts - b.ts);
 }
 
-function pad(n) {
-  return String(n).padStart(2, '0');
-}
-
-export function bucketKey(ts, granularity) {
-  const d = new Date(ts);
-  const y = d.getFullYear();
-  const m = pad(d.getMonth() + 1);
-  const day = pad(d.getDate());
-  if (granularity === 'hour') return `${y}-${m}-${day} ${pad(d.getHours())}:00`;
-  if (granularity === 'month') return `${y}-${m}`;
-  return `${y}-${m}-${day}`;
-}
-
-function bucketStart(ts, granularity) {
-  const d = new Date(ts);
-  d.setMinutes(0, 0, 0);
-  if (granularity === 'day') d.setHours(0);
-  if (granularity === 'month') d.setDate(1);
-  return d.getTime();
-}
+/* 分桶口径（bucketKey / bucketStart）已挪到 timing.js：
+   时间去向的趋势分桶也要用，放这边会形成 timing → store 的反向依赖。 */
 
 export function round(n, p = 2) {
   const f = 10 ** p;

@@ -250,7 +250,7 @@ const ph = fullTimings.phases.get('session-t');
 assert.strictEqual(ph.spanMs, 24000, '全程跨度 = 首末事件之差');
 assert.strictEqual(ph.modelMs, 10000, '模型生成 = 5000 + 2000 + 3000');
 assert.strictEqual(ph.toolMs, 14000, '工具执行 = 4000 + 10000');
-assert.strictEqual(ph.waitMs, 0, '本次全程无等待用户时段');
+assert.strictEqual(ph.humanMs, 0, '本次全程没有人的环节（事件之间都紧接着）');
 assert.strictEqual(ph.activeMs, 24000, '在岗 = 模型 + 工具 + 等待');
 
 /* ---------- 速度拟合：能不能从带噪声的样本里还原出设定的斜率和截距 ---------- */

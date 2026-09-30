@@ -192,6 +192,82 @@ useChart(trendEl, () => {
   };
 });
 
+/* ---------- 时间去向趋势 ----------
+ *
+ * 为什么必须有这张图：时间去向只有一个总数时，"这周比上周怎么样"根本无从谈起 ——
+ * 绝对值多少不重要，**趋势**才可行动。分桶口径与上面的用量趋势完全一致。
+ *
+ * 只画在岗的三段，不画「离开」：离开一天能到 20 小时，画进来另外三段会被压成零
+ * （PhaseBar 当初不画离开也是同一个理由）。离开的量放在 tooltip 里，想看能查到。
+ *
+ * 配色与 PhaseBar、PhaseMiniBar 严格一致 —— 三处画的是同一组指标，
+ * 颜色对不上，看的人就得重新学一遍。
+ */
+const phaseTrendEl = ref(null);
+useChart(phaseTrendEl, () => {
+  const t = data.value?.phaseTimeline || [];
+  if (!t.length) return null;
+  const gran = props.filter.granularity || 'day';
+  const fmtLabel = (b) => (gran === 'hour' ? b.key.slice(5) : gran === 'month' ? b.key : b.key.slice(5));
+  const bw = t.length <= 8 ? 62 : t.length <= 20 ? 40 : 22;
+  // 图里用分钟：按小时分桶时在岗常常只有几分钟，拿毫秒或小时读都不直观
+  const mins = (ms) => Math.round(ms / 600) / 100;
+  return {
+    grid: { left: 8, right: 8, top: 34, bottom: 4, containLabel: true },
+    tooltip: {
+      ...baseTooltip,
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      formatter: (ps) => {
+        const b = t[ps[0].dataIndex];
+        return `<b>${b.key}</b><br/>
+          ${ps.map((x) => `${x.marker} ${x.seriesName}：<b>${fmtSec(x.value * 60000)}</b>`).join('<br/>')}
+          <div style="margin-top:6px;padding-top:6px;border-top:1px solid #eee">
+          在岗合计 <b>${fmtSec(b.activeMs)}</b> ｜ 离开 <b>${fmtSec(b.awayMs)}</b></div>`;
+      },
+    },
+    legend: { top: 0, right: 0, itemWidth: 9, itemHeight: 9, textStyle: { color: theme.sub, fontSize: 11 } },
+    xAxis: {
+      type: 'category',
+      data: t.map(fmtLabel),
+      axisLine: { lineStyle: { color: theme.axis } },
+      axisTick: { show: false },
+      axisLabel: baseAxisLabel,
+    },
+    yAxis: {
+      type: 'value',
+      axisLabel: { ...baseAxisLabel, formatter: (v) => v + 'm' },
+      splitLine: { lineStyle: { color: theme.grid } },
+    },
+    series: [
+      {
+        name: '模型生成',
+        type: 'bar',
+        stack: 'ph',
+        barMaxWidth: bw,
+        itemStyle: { color: '#27618c' },
+        data: t.map((b) => mins(b.modelMs)),
+      },
+      {
+        name: '工具执行',
+        type: 'bar',
+        stack: 'ph',
+        barMaxWidth: bw,
+        itemStyle: { color: '#2c7a83' },
+        data: t.map((b) => mins(b.toolMs)),
+      },
+      {
+        name: '人的环节',
+        type: 'bar',
+        stack: 'ph',
+        barMaxWidth: bw,
+        itemStyle: { color: '#b8863a', borderRadius: [3, 3, 0, 0] },
+        data: t.map((b) => mins(b.humanMs)),
+      },
+    ],
+  };
+});
+
 /* ---------- 模型分布 ---------- */
 const modelEl = ref(null);
 /** 饼图口径：credit / token / 请求数。默认按 credit，因为那才是成本 */
@@ -506,11 +582,11 @@ useChart(toolEl, () => {
         <div class="panel-head">
           <div>
             <div class="panel-title">时间去向</div>
-            <div class="panel-sub">在岗时间拆成三段，离开电脑的时段不计入</div>
+            <div class="panel-sub">在岗时间拆成三段：模型在生成、工具在执行、你在读和写。离开电脑的时段不计入</div>
           </div>
         </div>
         <div class="pad">
-          <PhaseBar :phase="phase" />
+          <PhaseBar :phase="phase" :credit="s.credit" />
 
           <div v-if="bySessionPhase.length" class="breakdown">
             <div class="breakdown-head">
@@ -554,6 +630,17 @@ useChart(toolEl, () => {
           <div v-if="!data.slowTools.length" class="empty">暂无可用的工具耗时数据</div>
         </div>
       </div>
+    </div>
+
+    <!-- 时间去向趋势：没有时间维度，"时间花在哪"就只能看个总数 -->
+    <div class="panel">
+      <div class="panel-head">
+        <div>
+          <div class="panel-title">时间去向趋势</div>
+          <div class="panel-sub">按当前粒度分桶 · 只画在岗，离开量见悬停提示</div>
+        </div>
+      </div>
+      <div ref="phaseTrendEl" class="chart chart-lg" />
     </div>
   </template>
 

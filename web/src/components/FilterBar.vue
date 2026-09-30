@@ -10,44 +10,24 @@ import AppSelect from './ui/AppSelect.vue';
 import AppDatePicker from './ui/AppDatePicker.vue';
 import { colorOf } from '../utils/format.js';
 import { allowedGranularities, spanDaysOf } from '../utils/granularity.js';
+import { RANGES, CUSTOM_PRESET } from '../utils/ranges.js';
 
 const props = defineProps({
   filter: { type: Object, required: true },
   meta: { type: Object, default: () => ({}) },
   loading: Boolean,
+  /** 本次是从 localStorage 沿用了当天存下的筛选 */
+  restored: Boolean,
 });
-const emit = defineEmits(['update:filter', 'refresh']);
+const emit = defineEmits(['update:filter', 'refresh', 'dismiss-restored']);
 
 function set(key, value) {
   emit('update:filter', { ...props.filter, [key]: value });
 }
 
-/* ---------- 时间区间 ---------- */
-
-/** 取 n 天前的本地零点。用 setDate 而不是"减 n × 86400000 毫秒"——
- *  后者在夏令时切换日会偏一小时，跨时区跑也会出怪值。 */
-function daysAgo(n) {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() - n);
-  return d;
-}
-
-function toDayStr(d) {
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
-
-/** 起止留空的含义：起点空 = 不限，终点空 = 到今天。
- *  按钮按时间先后从左到右排列：昨天 → 今天 → 近 7 天 → 近 30 天 → 全部。 */
-const RANGES = [
-  // 昨天是**闭区间**，两端都要给："不限 → 昨天"会把今天之前的全部数据都算进来
-  { label: '昨天', range: () => ({ from: toDayStr(daysAgo(1)), to: toDayStr(daysAgo(1)) }) },
-  { label: '今天', range: () => ({ from: toDayStr(daysAgo(0)), to: '' }) },
-  { label: '近 7 天', range: () => ({ from: toDayStr(daysAgo(7)), to: '' }) },
-  { label: '近 30 天', range: () => ({ from: toDayStr(daysAgo(30)), to: '' }) },
-  { label: '全部', range: () => ({ from: '', to: '' }) },
-];
+/* ---------- 时间区间 ----------
+   档位定义在 utils/ranges.js：'记住上次筛选'要按同一个档位重算区间，
+   两边各写一套迟早会对不上。 */
 
 const activeRange = computed(() => props.filter.preset);
 
@@ -57,10 +37,10 @@ function pickRange(r) {
 
 /** 手动改日期视为自定义区间 */
 function setFrom(value) {
-  emit('update:filter', { ...props.filter, preset: 'custom', from: value });
+  emit('update:filter', { ...props.filter, preset: CUSTOM_PRESET, from: value });
 }
 function setTo(value) {
-  emit('update:filter', { ...props.filter, preset: 'custom', to: value });
+  emit('update:filter', { ...props.filter, preset: CUSTOM_PRESET, to: value });
 }
 
 const rangeHint = computed(() => {
@@ -222,6 +202,12 @@ function reset() {
         <span v-if="hasFilter" class="muted">· 已应用筛选</span>
       </span>
 
+      <!-- 沿用上次筛选时给个交代：不然用户会以为筛选是自己冒出来的 -->
+      <span v-if="restored" class="restored">
+        已沿用今天用过的筛选
+        <button class="restored-x" title="知道了" @click="emit('dismiss-restored')">×</button>
+      </span>
+
       <div class="grow" />
 
       <div class="search" :class="{ filled: !!filter.keyword }">
@@ -331,6 +317,35 @@ function reset() {
   background: var(--ok);
   box-shadow: 0 0 0 3px var(--ok-ring);
   flex: none;
+}
+
+/* "已沿用今天用过的筛选" 的小胶囊 */
+.restored {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 6px 0 9px;
+  border-radius: var(--radius-chip);
+  font-size: 10.5px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-edge);
+}
+
+.restored-x {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+}
+
+.restored-x:hover {
+  opacity: 1;
 }
 
 /* 搜索框 */

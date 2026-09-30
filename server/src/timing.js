@@ -21,10 +21,28 @@
  * 这样短请求也能算出量级正确的瞬时速度。
  */
 
-/** 超过这个间隔视为"人离开了电脑"，不计入在岗时长的任何阶段 */
+/**
+ * 超过这个间隔视为"人离开了电脑"，不计入在岗时长的任何阶段。
+ *
+ * 30 分钟不是拍出来的：实测 97 个人机间隔，长度从 1.1min **连续**铺到 23.8min，
+ * 唯一一个真实断层在 23.8min → 51.8min（×2.18），30 分钟正好落在断口里。
+ *
+ * ⚠ 所以**没有**再加"90 秒 / 10 分钟"那种中间档 —— 数据里不存在第二个断点，
+ * 硬切只会把"读一段长回复"误判成"离开"。人机间隔分档到这个精度就是极限了，
+ * 再细就只能靠输入事件，而 JSONL 里没有。
+ *
+ * 实测参考：模型段最长 11.8min、工具段最长 5.1min，都远够不到这个阈值，
+ * 所以它实际上只作用于「人的环节」那一段。
+ */
 const AWAY_MS = 30 * 60 * 1000;
-/** 工具耗时的上限，超过只可能是解析异常 */
+/** 工具耗时的上限，超过只可能是解析异常（实测最长 5.1min，留足余量） */
 const MAX_TOOL_MS = 30 * 60 * 1000;
+/**
+ * 「人的环节」里超过这个长度的间隔，单独报一个数出来。
+ * 是"读长文档 / 去开会 / 真的走开了"，日志里区分不出来 ——
+ * 如实交代，而不是替用户假设一个档位把它切掉。
+ */
+const LONG_HUMAN_MS = 5 * 60 * 1000;
 /** 净出字时长太短时算出来的速度是噪声（分母趋零），直接判为不可用 */
 const MIN_NET_MS = 300;
 /** 样本少于这个数就不拟合了（5 个点已经能定一条线，但别更少） */
@@ -36,10 +54,11 @@ const RELIABLE_R2 = 0.6;
 const FALLBACK_OVERHEAD_MS = 3000;
 
 /**
- * 走一遍每个会话的时间线，产出三样东西：
+ * 走一遍每个会话的时间线，产出四样东西：
  *   reqDur    messageId → { startTs, durMs }   每次请求的端到端耗时
  *   toolCalls 每个工具调用的实测耗时（callId 配对）
- *   phases    每个会话的时间去向（模型生成 / 工具执行 / 等待用户 / 离开）
+ *   phases    每个会话的时间去向（模型生成 / 工具执行 / 人的环节 / 离开）
+ *   intervals 每个会话的区间明细，喂给 mergePhases 做并集（见那边的注释）
  *
  * 阶段划分是**互不重叠**的：并行工具调用会先来 fc#1、fc#2 再来 fcr#1、fcr#2，
  * 逐段累加正好等于 fcr#2 − fc#1，不会因为工具并行而重复计时。
@@ -48,6 +67,8 @@ export function deriveTimings(timelines) {
   const reqDur = new Map();
   const toolCalls = [];
   const phases = new Map();
+  /** @type {Map<string, {from:number,to:number,segs:Array<{s:number,e:number,type:string}>}>} */
+  const intervals = new Map();
 
   for (const tl of timelines) {
     const ev = tl.events || [];
@@ -56,8 +77,11 @@ export function deriveTimings(timelines) {
     let prevSig = null;
     let modelMs = 0;
     let toolMs = 0;
-    let waitMs = 0;
+    let humanMs = 0;
     let awayMs = 0;
+    let longHumanMs = 0;
+    let longHumanCount = 0;
+    const segs = [];
 
     const first = ev.length ? ev[0].t : null;
     const last = ev.length ? ev[ev.length - 1].t : null;
@@ -90,15 +114,29 @@ export function deriveTimings(timelines) {
 
       if (prevSig) {
         const gap = Math.max(0, e.t - prevSig.t);
+        // 这一段是谁在花时间：请求完成点 = 模型生成，工具返回 = 工具执行，其余 = 人
+        const type = e.u === 1 ? 'model' : e.ty === 'fcr' ? 'tool' : 'human';
+
         if (gap > AWAY_MS) {
           awayMs += gap;
-        } else if (e.u === 1) {
-          modelMs += gap;
-          if (e.mid) reqDur.set(e.mid, { startTs: prevSig.t, durMs: gap });
-        } else if (e.ty === 'fcr') {
-          toolMs += gap;
+          segs.push({ s: prevSig.t, e: e.t, type: 'away' });
         } else {
-          waitMs += gap;
+          if (type === 'model') {
+            modelMs += gap;
+            if (e.mid) reqDur.set(e.mid, { startTs: prevSig.t, durMs: gap });
+          } else if (type === 'tool') {
+            toolMs += gap;
+          } else {
+            humanMs += gap;
+            if (gap > LONG_HUMAN_MS) {
+              longHumanMs += gap;
+              longHumanCount += 1;
+              // 同一个区间打两个标签：longHuman 是 human 的子集，
+              // 合并时按同一分母均分，所以它天然不会超过人的环节总时长
+              segs.push({ s: prevSig.t, e: e.t, type: 'longHuman' });
+            }
+          }
+          segs.push({ s: prevSig.t, e: e.t, type });
         }
       }
       prevSig = e;
@@ -111,14 +149,20 @@ export function deriveTimings(timelines) {
       spanMs,
       modelMs,
       toolMs,
-      waitMs,
+      humanMs,
       awayMs,
+      longHumanMs,
+      longHumanCount,
       /** 在岗时长 = 全程 − 离开（离开时段会把其它三段压成看不见的细线） */
-      activeMs: modelMs + toolMs + waitMs,
+      activeMs: modelMs + toolMs + humanMs,
     });
+
+    if (segs.length) {
+      intervals.set(tl.sessionId, { from: first ?? 0, to: last ?? 0, segs });
+    }
   }
 
-  return { reqDur, toolCalls, phases };
+  return { reqDur, toolCalls, phases, intervals };
 }
 
 /**
@@ -246,20 +290,210 @@ export function summarizeSpeed(records) {
   };
 }
 
-/** 把若干会话的时间去向累加成一份（总览用） */
-export function mergePhases(phaseList) {
-  const acc = { spanMs: 0, modelMs: 0, toolMs: 0, waitMs: 0, awayMs: 0, activeMs: 0, sessions: 0 };
-  for (const p of phaseList) {
-    if (!p) continue;
-    acc.spanMs += p.spanMs;
-    acc.modelMs += p.modelMs;
-    acc.toolMs += p.toolMs;
-    acc.waitMs += p.waitMs;
-    acc.awayMs += p.awayMs;
-    acc.activeMs += p.activeMs;
-    acc.sessions += 1;
+/**
+ * 把多个会话的时间去向合成**墙钟口径**。
+ *
+ * 为什么不能直接相加：并行开两个会话时，同一段时间会被算两次。
+ * 实测 15 个会话相加 107.5h，而真实墙钟（并集）只有 100.4h —— **虚高 7%**，
+ * 并行用得越多错得越离谱。
+ *
+ * 做法是扫描线：把时间轴切成"活跃集合不变"的小段，每段按该段的活跃会话数
+ * 均分给各自的类型。这样 Σ(模型 + 工具 + 人的环节) 恒等于并集长度，
+ * 「在岗时长」和它上面三段占比才是自洽的（否则占比之和会超过 100%）。
+ *
+ * 离开（>30 分钟的间隔）只在**没有任何会话在工作**时才计入 —— 否则一个人
+ * 去开会，会把另一个还在跑的会话的真实在岗时间也涂成"离开"。
+ *
+ * @param {Array<{from:number,to:number,segs:Array<{s:number,e:number,type:string}>}>} items 每个会话一条
+ * @param {{from?:number,to?:number,granularity?:string|null}} opts 裁剪区间与分桶粒度
+ */
+export function mergePhases(items, opts = {}) {
+  const { from = -Infinity, to = Infinity, granularity = null } = opts;
+
+  // 全程跨度：各会话 [起,止] 的并集（同样不能相加）
+  const spanMs = unionLength(
+    items.map((it) => [it.from, it.to]),
+    from,
+    to,
+  );
+
+  const segs = [];
+  let longHumanCount = 0;
+  for (const it of items) {
+    for (const g of it.segs) {
+      const s = Math.max(g.s, from);
+      const e = Math.min(g.e, to);
+      if (e <= s) continue; // 裁掉的部分不计时也不计数，口径才和 longHumanMs 对得上
+      segs.push({ s, e, type: g.type });
+      if (g.type === 'longHuman') longHumanCount += 1;
+    }
   }
-  return acc;
+
+  const t = sweepTotals(segs);
+  /* ⚠ 在岗时长必须**由三段相加得出**，不能各自取整后再加：
+     三个 Math.round 的误差会让"三段之和 ≠ 在岗时长"，占比就会差一丝，
+     堆叠条撑不满 100%（这个不变量有 e2e 断言盯着）。 */
+  const modelMs = Math.round(t.modelMs);
+  const toolMs = Math.round(t.toolMs);
+  const humanMs = Math.round(t.humanMs);
+  return {
+    spanMs: Math.round(spanMs),
+    modelMs,
+    toolMs,
+    humanMs,
+    activeMs: modelMs + toolMs + humanMs,
+    longHumanMs: Math.round(t.longHumanMs),
+    longHumanCount,
+    awayMs: Math.round(t.awayMs),
+    sessions: items.length,
+    /** 按粒度的趋势。没有它，「时间去向」只有一个总数 —— 看不出变好还是变坏 */
+    buckets: granularity ? bucketize(segs, granularity, sweepTotals) : [],
+  };
+}
+
+/**
+ * 扫描线：返回各类型在**并集**口径下的时长。
+ * 同一时刻有 k 个会话活跃时，这一段按活跃类型数均分，避免重复计时。
+ */
+function sweepTotals(segs) {
+  const out = { modelMs: 0, toolMs: 0, humanMs: 0, longHumanMs: 0, awayMs: 0, activeMs: 0 };
+  if (!segs.length) return out;
+
+  const events = [];
+  for (const g of segs) {
+    events.push([g.s, 1, g.type]);
+    events.push([g.e, -1, g.type]);
+  }
+  // 同一时刻先收（-1）后放（+1），零长度的首尾相接区间就不会被算进去
+  events.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+
+  const cnt = { model: 0, tool: 0, human: 0, longHuman: 0, away: 0 };
+  let prev = null;
+  let i = 0;
+  while (i < events.length) {
+    const t = events[i][0];
+    if (prev !== null && t > prev) {
+      const dt = t - prev;
+      // longHuman 是 human 的子集，不额外占份额，只按同一分母分到它自己那份
+      const k = cnt.model + cnt.tool + cnt.human;
+      if (k > 0) {
+        out.activeMs += dt;
+        out.modelMs += (dt * cnt.model) / k;
+        out.toolMs += (dt * cnt.tool) / k;
+        out.humanMs += (dt * cnt.human) / k;
+        out.longHumanMs += (dt * cnt.longHuman) / k;
+      } else if (cnt.away > 0) {
+        out.awayMs += dt;
+      }
+    }
+    while (i < events.length && events[i][0] === t) {
+      cnt[events[i][2]] += events[i][1];
+      i++;
+    }
+    prev = t;
+  }
+  return out;
+}
+
+/** 一组 [起,止] 的并集长度（截到 [from,to]） */
+function unionLength(ranges, from, to) {
+  const list = [];
+  for (const [a, b] of ranges) {
+    const s = Math.max(a, from);
+    const e = Math.min(b, to);
+    if (e > s) list.push([s, e]);
+  }
+  if (!list.length) return 0;
+  list.sort((x, y) => x[0] - y[0]);
+  let total = 0;
+  let cs = list[0][0];
+  let ce = list[0][1];
+  for (let i = 1; i < list.length; i++) {
+    if (list[i][0] <= ce) {
+      ce = Math.max(ce, list[i][1]);
+    } else {
+      total += ce - cs;
+      cs = list[i][0];
+      ce = list[i][1];
+    }
+  }
+  return total + (ce - cs);
+}
+
+/**
+ * 按粒度把区间切开、逐桶做扫描线。
+ * 先切后算：一段区间可能横跨零点，不切就会整段算进前一天。
+ */
+function bucketize(segs, granularity, sweep) {
+  const map = new Map();
+  for (const g of segs) {
+    let t = g.s;
+    let guard = 0;
+    // guard 防的是 bucketEnd 返回不比 t 大的异常值导致死循环
+    while (t < g.e && guard++ < 100_000) {
+      const end = Math.min(g.e, bucketEnd(t, granularity));
+      if (end <= t) break;
+      const key = bucketKey(t, granularity);
+      let b = map.get(key);
+      if (!b) {
+        b = { key, ts: bucketStart(t, granularity), segs: [] };
+        map.set(key, b);
+      }
+      b.segs.push({ s: t, e: end, type: g.type });
+      t = end;
+    }
+  }
+  return [...map.values()]
+    .map((b) => {
+      const r = sweep(b.segs);
+      // 同 mergePhases：在岗由三段相加得出，保证每个桶里三段也撑满 100%
+      const modelMs = Math.round(r.modelMs);
+      const toolMs = Math.round(r.toolMs);
+      const humanMs = Math.round(r.humanMs);
+      return {
+        key: b.key,
+        ts: b.ts,
+        modelMs,
+        toolMs,
+        humanMs,
+        activeMs: modelMs + toolMs + humanMs,
+        awayMs: Math.round(r.awayMs),
+      };
+    })
+    .sort((a, b) => a.ts - b.ts);
+}
+
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+/** 分桶键（本地时区）。与 store.js 的记录分桶共用同一套口径 */
+export function bucketKey(ts, granularity) {
+  const d = new Date(ts);
+  const y = d.getFullYear();
+  const m = pad2(d.getMonth() + 1);
+  const day = pad2(d.getDate());
+  if (granularity === 'hour') return `${y}-${m}-${day} ${pad2(d.getHours())}:00`;
+  if (granularity === 'month') return `${y}-${m}`;
+  return `${y}-${m}-${day}`;
+}
+
+/** 分桶起点 */
+export function bucketStart(ts, granularity) {
+  const d = new Date(ts);
+  d.setMinutes(0, 0, 0);
+  if (granularity === 'day') d.setHours(0);
+  if (granularity === 'month') d.setDate(1);
+  return d.getTime();
+}
+
+/** 分桶终点（下一个桶的起点）。用 setHours/setDate 走本地时区，跨夏令时也不会偏 */
+function bucketEnd(ts, granularity) {
+  const d = new Date(bucketStart(ts, granularity));
+  if (granularity === 'hour') d.setHours(d.getHours() + 1);
+  else if (granularity === 'month') d.setMonth(d.getMonth() + 1);
+  else d.setDate(d.getDate() + 1);
+  return d.getTime();
 }
 
 function median(arr) {

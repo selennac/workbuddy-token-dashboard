@@ -26,8 +26,9 @@
  * [0]=总览、[1]=会话、[2]=明细。每个视图内部还有各自的内容块，
  * 所以先用索引取视图，再用视图内的选择器取内容。
  */
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 /**
@@ -57,17 +58,85 @@ if (!BROWSER) {
   process.exit(1);
 }
 
-const SHOT_DIR = path.resolve(__dirname, '..', '.cache', 'shots');
+const CACHE_DIR = path.resolve(__dirname, '..', '.cache');
+const SHOT_DIR = path.join(CACHE_DIR, 'shots');
 fs.mkdirSync(SHOT_DIR, { recursive: true });
-/** profile 带上端口：并发运行时各用各的，不会互相锁目录；跑完顺手删掉（一个 profile 上百 MB） */
-const PROFILE_DIR = path.join(SHOT_DIR, '..', 'e2e-profile-' + CDP_PORT);
-function cleanup() {
+
+/**
+ * 浏览器 profile 放**系统临时目录**，不放在 .cache/。
+ *
+ * 理由：它不是项目产物；而且 Windows 上 Chromium 退出后句柄还要释放一会儿，
+ * 删除经常失败 —— 留在 .cache/ 里失败一次就是 57MB，实测攒到过 743MB。
+ * 扔进 tmp，就算这次没删干净也不会污染仓库，下次运行时开头的 sweep 再清。
+ */
+const PROFILE_PREFIX = 'wb-e2e-profile-';
+/** profile 带上端口：并发运行时各用各的，不会互相锁目录 */
+const PROFILE_DIR = path.join(os.tmpdir(), PROFILE_PREFIX + CDP_PORT);
+
+/**
+ * 扫掉历史遗留的 profile。
+ *
+ * 为什么需要：cleanup() 只在正常退出时跑到。Ctrl+C、崩在断言里、以及上面说的
+ * 文件被锁，都会留下一个 ~57MB 的 profile。
+ *
+ * 只删**一小时前**的：并发跑 e2e 是这脚本刻意支持的场景，另一个 run 的 profile
+ * 一直在写、mtime 是新的，按时间筛就不会误删它。前缀也限定死，不碰 tmp 里别人的东西。
+ */
+function sweepStaleProfiles() {
+  let names = [];
   try {
-    proc.kill();
-  } catch { /* 已经退了 */ }
-  try {
-    fs.rmSync(PROFILE_DIR, { recursive: true, force: true });
-  } catch { /* Windows 上文件可能还被锁着，删不掉就算了 */ }
+    names = fs.readdirSync(os.tmpdir());
+  } catch {
+    return;
+  }
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  let n = 0;
+  for (const name of names) {
+    if (!name.startsWith(PROFILE_PREFIX)) continue;
+    const dir = path.join(os.tmpdir(), name);
+    try {
+      if (fs.statSync(dir).mtimeMs > cutoff) continue;
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+      n++;
+    } catch {
+      /* 还被锁着就留给下次 */
+    }
+  }
+  if (n) console.log('顺便清掉 ' + n + ' 个遗留的浏览器 profile');
+}
+sweepStaleProfiles();
+
+async function cleanup() {
+  /* Windows 上 proc.kill() 只杀主进程，Edge 的渲染/GPU 子进程还活着、还占着
+     profile 里的文件 —— 必须连子进程一起杀（taskkill /T）。 */
+  if (proc.pid) {
+    if (process.platform === 'win32') {
+      try {
+        spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { stdio: 'ignore' });
+      } catch {
+        /* 进程可能已经退了 */
+      }
+    } else {
+      try {
+        proc.kill('SIGKILL');
+      } catch {
+        /* 已经退了 */
+      }
+    }
+  }
+
+  /* 杀完之后句柄还要释放一会儿，头几次删经常失败（实测残留过 746 个文件）。
+     e2e 本来就要跑一分钟，这里多等几秒不心疼；实在删不掉就交给下次的 sweep。 */
+  for (let i = 0; i < 20; i++) {
+    await sleep(400);
+    try {
+      fs.rmSync(PROFILE_DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+      return;
+    } catch {
+      /* 再试一次 */
+    }
+  }
+  console.log('提示：本次的浏览器 profile 没能删干净（在系统临时目录），下次运行会扫掉');
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -210,7 +279,7 @@ const proc = spawn(
 
   console.log('【总览 tab】');
   check('KPI 卡片 6 个', (await ev(V(0) + '.querySelectorAll(".kpi").length')) === 6);
-  check('图表 canvas 3 个', (await ev(charts)) === 3);
+  check('图表 canvas 4 个', (await ev(charts)) === 4);
   check('仅总览可见（无叠加）', (await ev(VIS)) === 1, '可见块=' + (await ev(VIS)));
 
   // 品牌图标已从内联 SVG 换成 src/assets/logo.jpg。
@@ -387,7 +456,7 @@ const proc = spawn(
     const after = await ev(V(0) + '.querySelector(".kpi-value").textContent');
     check('项目筛选生效', before !== after, '全部=' + before + ' → ' + picked + '=' + after);
     check('选完后弹层关闭', (await ev('!!document.querySelector(".pop")')) === false);
-    check('筛选后图表仍 3 个', (await ev(charts)) === 3);
+    check('筛选后图表仍 4 个', (await ev(charts)) === 4);
     check('筛选后时间去向仍渲染', await ev('!!' + V(0) + '.querySelector(".phase .track")'));
     check('筛选后最慢工具仍有数据', (await ev(V(0) + '.querySelectorAll(".slow-row").length')) > 0);
   } else {
@@ -458,7 +527,7 @@ const proc = spawn(
     JSON.stringify(gs),
   );
   check('粒度被限定时有说明文字', await ev('!!document.querySelector(".gran-note")'));
-  check('切到「今天」后图表仍渲染', (await ev(charts)) === 3);
+  check('切到「今天」后图表仍渲染', (await ev(charts)) === 4);
 
   await pickRange('近 30 天');
   await sleep(1800);
@@ -491,7 +560,7 @@ const proc = spawn(
   // 「昨天」有没有数据因机器而异——恰好为空才断言降级文案，有数据就跳过这两项。
   const yRequests = await kpiText(V(0), '请求总数');
   check('区间切换后 KPI 仍渲染', yRequests !== null, yRequests);
-  check('区间切换后图表容器仍在', (await ev(charts)) === 3);
+  check('区间切换后图表容器仍在', (await ev(charts)) === 4);
   if (yRequests === '0') {
     check('空区间下时间去向给出降级文案', await ev('!!' + V(0) + '.querySelector(".phase .empty")'));
     check('空区间下最慢工具给出降级文案', await ev('!!' + V(0) + '.querySelector(".slow .empty")'));
@@ -536,7 +605,7 @@ const proc = spawn(
     new Set(kpiH).size === 1,
     JSON.stringify(kpiH),
   );
-  check('窄屏下图表仍渲染', (await ev(charts)) === 3);
+  check('窄屏下图表仍渲染', (await ev(charts)) === 4);
   const bdRows = await ev(V(0) + '.querySelectorAll(".bd-row").length');
   check('时间去向有按会话的下钻列表', bdRows >= 3, bdRows + ' 行');
   const bdSum = await ev(
@@ -566,10 +635,10 @@ const proc = spawn(
   console.log('\n════ 通过 ' + pass + ' 项，失败 ' + fail + ' 项 ════');
   console.log('截图已保存到 .cache/shots/');
   ws.close();
-  cleanup();
+  await cleanup();
   process.exit(fail ? 1 : 0);
-})().catch((e) => {
+})().catch(async (e) => {
   console.error('验证失败: ' + e.message);
-  cleanup();
+  await cleanup();
   process.exit(1);
 });
